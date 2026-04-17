@@ -1,0 +1,17 @@
+# データ（計測結果）
+data/
+
+# Pico 設定（WiFi パスワード等が入るため）
+config.py
+pico/config.py
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# エディタ・OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
