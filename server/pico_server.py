@@ -11,6 +11,7 @@ CSVに記録する。WiFi遅延もR(x)分布データとして保存。
 from flask import Flask, request, jsonify
 import csv
 import os
+import time
 from datetime import datetime
 
 app = Flask(__name__)
@@ -38,17 +39,22 @@ if not os.path.exists(LATENCY_FILE):
     with open(LATENCY_FILE, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
-            "timestamp", "node_id", "wifi_rtt_ms",
-            "uptime_ms", "send_attempt"
+            "server_recv_ts", "node_id", "interval_ms",
+            "process_time_ms", "pico_uptime_ms",
+            "pico_rtt_ms", "send_attempt"
         ])
 
 # ノード状態の追跡
 nodes = {}
+# 同ノードの前回受信時刻（interval_ms 計測用）
+last_recv_time = {}
 
 
 @app.route("/data", methods=["POST"])
 def receive_data():
     """Pico 2Wからのセンサーデータ受信"""
+    # 受信直後に計測開始（処理時間の基準点）
+    recv_perf = time.perf_counter()
     server_time = datetime.now()
 
     try:
@@ -66,7 +72,15 @@ def receive_data():
     rtt = data.get("wifi_rtt_ms", 0)
     attempt = data.get("send_attempt", 1)
 
-    # センサーデータ記録
+    # 同ノードの前回受信からの経過時間（初回は None → CSV空欄）
+    prev = last_recv_time.get(node_id)
+    if prev is None:
+        interval_ms = None
+    else:
+        interval_ms = (server_time - prev).total_seconds() * 1000.0
+    last_recv_time[node_id] = server_time
+
+    # センサーデータ記録（既存スキーマ維持）
     with open(DATA_FILE, "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
@@ -74,12 +88,20 @@ def receive_data():
             node_id, temp, hum, uptime, rtt
         ])
 
-    # WiFi遅延ログ記録（R(x)分布データ）
+    # レスポンス返却直前に処理時間を確定
+    process_time_ms = (time.perf_counter() - recv_perf) * 1000.0
+
+    # WiFi遅延ログ記録（R(x)分布データ・サーバー側計測）
     with open(LATENCY_FILE, "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
             server_time.isoformat(),
-            node_id, rtt, uptime, attempt
+            node_id,
+            "" if interval_ms is None else f"{interval_ms:.3f}",
+            f"{process_time_ms:.3f}",
+            uptime,
+            rtt,
+            attempt,
         ])
 
     # ノード状態更新
@@ -89,12 +111,17 @@ def receive_data():
         "humidity": hum,
         "rtt": rtt,
         "uptime_ms": uptime,
+        "interval_ms": interval_ms,
+        "process_time_ms": process_time_ms,
     }
 
+    interval_str = "—" if interval_ms is None else f"{interval_ms:.0f}ms"
     print(
         f"[{server_time.strftime('%H:%M:%S')}] "
         f"Node {node_id}: {temp}°C / {hum}% "
-        f"(RTT: {rtt}ms, attempt: {attempt})"
+        f"(interval: {interval_str}, "
+        f"proc: {process_time_ms:.2f}ms, "
+        f"pico_rtt: {rtt}ms, attempt: {attempt})"
     )
 
     return jsonify({"status": "ok", "server_time": server_time.isoformat()})
